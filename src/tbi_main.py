@@ -205,6 +205,13 @@ def crop_movie(centroid_cell, movie, max_width, max_height):
 
 
 def save_array_as_tiff(array_to_save, path_results, file_name):
+    """
+
+    :param array_to_save:
+    :param path_results:
+    :param file_name:
+    :return:
+    """
     # then saving each frame as a unique tiff
     tiff_file_name = os.path.join(path_results, file_name)
     with tifffile.TiffWriter(tiff_file_name) as tiff:
@@ -544,7 +551,7 @@ def load_tiff_movie(tiff_file_name):
     return tiff_movie
 
 
-def find_blobs(tiff_array, with_blob_display=False):
+def find_blobs(tiff_array, results_path=None, result_id=None, with_blob_display=False):
     # img = ((tiff_array - tiff_array.min()) * (1 / (tiff_array.max() - tiff_array.min()) * 255)).astype('uint8')
     img = binarized_frame(movie_frame=tiff_array, filled_value=255, percentile_threshold=98)
     # img = tiff_array.copy()
@@ -609,7 +616,8 @@ def find_blobs(tiff_array, with_blob_display=False):
                                               cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
 
         # Show keypoints
-        cv2.imshow("Keypoints", im_with_keypoints)
+        # cv2.imshow("Keypoints", im_with_keypoints)
+        cv2.imwrite(os.path.join(results_path, f"{result_id}_blobs.png"), im_with_keypoints)
         cv2.waitKey(0)
 
     from shapely.geometry import Polygon
@@ -626,26 +634,23 @@ def find_blobs(tiff_array, with_blob_display=False):
     return centers_of_gravity
 
 
-if __name__ == '__main__':
-    root_path = "/Users/pappyhammer/Documents/academique/these_inmed/tbi_microglia_github/"
-    # root_path = "/media/julien/Not_today/hne_not_today/"
-    data_path = os.path.join(root_path, "data/")
-
-    results_path = os.path.join(root_path, "results")
-    time_str = datetime.now().strftime("%Y_%m_%d.%H-%M-%S")
-    results_id = "XYCTZ_Substack_9-16"
-    results_path = os.path.join(results_path, results_id + "_" + time_str)
-    os.mkdir(results_path)
-
-    movie = load_tiff_movie(tiff_file_name=os.path.join(data_path, "registered [XYCTZ] Substack (9-16).tif"))
+def analyze_movie(tiff_file_name, results_id, results_path):
+    movie = load_tiff_movie(tiff_file_name=tiff_file_name)
     print(movie.shape)
     # print(f"tiff_array.mean {np.mean(tiff_array)}")
 
+    new_results_path = os.path.join(results_path, results_id)
+    if not os.path.exists(new_results_path):
+        os.mkdir(new_results_path)
+
     # each element if a tuple of 2 int represent the center of a cell
-    centers_of_gravity = find_blobs(movie.copy()[0])
+    # TODO: See to find blob on avg movie ? np.mean(movie, axis=0)
+    # centers_of_gravity = find_blobs(movie.copy()[0])
+    centers_of_gravity = find_blobs(np.mean(movie, axis=0), with_blob_display=True,
+                                    results_path=new_results_path, result_id=results_id)
 
     print(f"Nb of blobs: {len(centers_of_gravity)}")
-
+    # raise Exception("TOTO")
     cells_movie = []
     # now we want to build as many arrays as centers_of_gravity
     for cell_index, centroid_cell in enumerate(centers_of_gravity):
@@ -663,9 +668,9 @@ if __name__ == '__main__':
                                                              cell_id=cell_movie_index)
             all_diff_sums.extend(diff_sums)
 
-            save_array_as_tiff(array_to_save=registered_movie, path_results=results_path,
+            save_array_as_tiff(array_to_save=registered_movie, path_results=new_results_path,
                                file_name=f"{cell_movie_index}_new_{results_id}.tiff")
-            save_array_as_tiff(array_to_save=cell_movie, path_results=results_path,
+            save_array_as_tiff(array_to_save=cell_movie, path_results=new_results_path,
                                file_name=f"{cell_movie_index}_{results_id}.tiff")
         else:
             x_y_translation = get_x_y_translation_blob(cell_movie)
@@ -674,9 +679,9 @@ if __name__ == '__main__':
             else:
                 new_cell_movie = register_movie(cell_movie, x_y_translation)
                 # print(f"{cell_movie_index}: {x_y_translation}")
-                save_array_as_tiff(array_to_save=new_cell_movie, path_results=results_path,
+                save_array_as_tiff(array_to_save=new_cell_movie, path_results=new_results_path,
                                    file_name=f"{cell_movie_index}_new_{results_id}.tiff")
-                save_array_as_tiff(array_to_save=cell_movie, path_results=results_path,
+                save_array_as_tiff(array_to_save=cell_movie, path_results=new_results_path,
                                    file_name=f"{cell_movie_index}_{results_id}.tiff")
 
     # TODO: Doing the diff between the different images, take the minimum diff after trying a few sliding over the window
@@ -687,3 +692,48 @@ if __name__ == '__main__':
                            twice_more_bins=True,
                            xlabel=f"Diffs",
                            save_formats="png")
+    np.save(os.path.join(results_path, results_id + ".npy"), all_diff_sums)
+
+if __name__ == '__main__':
+    # root_path = "/Users/pappyhammer/Documents/academique/these_inmed/tbi_microglia_github/"
+    root_path = "/media/julien/Not_today/tbi_microglia/"
+    data_path = os.path.join(root_path, "data/")
+
+    results_path = os.path.join(root_path, "results")
+    time_str = datetime.now().strftime("%Y_%m_%d.%H-%M-%S")
+
+    results_path = os.path.join(results_path, time_str)
+    os.mkdir(results_path)
+
+    # results_id = "XYCTZ_Substack_9-16"
+    # tiff_file_name = os.path.join(data_path, "registered [XYCTZ] Substack (9-16).tif")
+    mouses = ["Mouse 64", "Mouse 66"]
+    conditions = ["1d post injury", "Baseline", "Injury"]
+    subfolders = {"Injury": ["Before Injury", "After injury"],
+                  "Baseline": ["Before zoom", "After zoom"],
+                  "1d post injury": [""]}
+
+    for mouse in mouses:
+        for condition in conditions:
+            for subfolder in subfolders[condition]:
+                if subfolder == "":
+                    current_data_path = os.path.join(data_path, mouse, condition)
+                else:
+                    current_data_path = os.path.join(data_path, mouse, condition, subfolder)
+
+                # then we look for all tif files starting with a f
+                file_names = []
+                # look for filenames in the fisrst directory, if we don't break, it will go through all directories
+                for (dirpath, dirnames, local_filenames) in os.walk(current_data_path):
+                    file_names.extend(local_filenames)
+                    break
+                file_names = [f for f in file_names if f.startswith("f") and f.endswith(".tiff")]
+                for tiff_file_name in file_names:
+                    results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-5]
+                    print(f"## Analyzing  {results_id}")
+                    analyze_movie(tiff_file_name=os.path.join(current_data_path, tiff_file_name),
+                                  results_id=results_id, results_path=results_path)
+                    print("")
+        #         break
+        #     break
+        # break
