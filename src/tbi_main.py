@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import cv2
 import tifffile
+from bisect import bisect_right
 
 
 # qualitative 12 colors : http://colorbrewer2.org/?type=qualitative&scheme=Paired&n=12 + 11 diverting
@@ -694,6 +695,61 @@ def analyze_movie(tiff_file_name, results_id, results_path):
                            save_formats="png")
     np.save(os.path.join(results_path, results_id + ".npy"), all_diff_sums)
 
+
+def plot_cdf_from_distributions(distributions_dict, results_path, colors_dict, linestyle_dict, title=""):
+    # conditions = ['H', 'N', 'F']
+    # conditions_color = {'H': "red", 'N': "blue", 'F': "black"}
+    # distributions_dict = dict()
+    all_values = None
+    for key, distribution in distributions_dict.items():
+        if all_values is None:
+            all_values = distribution
+        else:
+            all_values = np.concatenate((all_values, distribution))
+    all_values = np.unique(all_values)
+    bin_size = 1
+    intensity_intervals = np.arange(int(np.min(all_values)), np.ceil(np.max(all_values)) + 1, bin_size)
+
+    cdf_dict = dict()
+    for key, distribution in distributions_dict.items():
+        cdf_dict[key] = np.zeros(len(intensity_intervals))
+        values, counts = np.unique(distribution, return_counts=True)
+        for value, count in zip(values, counts):
+            interval_index = bisect_right(intensity_intervals, value) - 1
+            cdf_dict[key][interval_index] = count
+        cdf_dict[key] = (cdf_dict[key] / np.sum(cdf_dict[key])) * 100
+        # now sum should be equal to 100
+        cdf_dict[key] = np.cumsum(cdf_dict[key])
+
+    # for index, condition_1 in enumerate(conditions[:-1]):
+    #     for condition_2 in conditions[index + 1:]:
+    #         d_ks, p_value = scipy.stats.ks_2samp(distributions_dict[condition_1], distributions_dict[condition_2])
+    #         print(f"{condition_1} vs {condition_2}: D={np.round(d_ks, 3)}, p={p_value}")
+
+    fig, ax1 = plt.subplots(nrows=1, ncols=1,
+                            figsize=(8, 8))
+
+    index = 0
+    for key, cdf in cdf_dict.items():
+        label_str = key
+        ax1.plot(intensity_intervals, cdf, c=colors_dict[label_str[8:]], linewidth=1.5,
+                 ls=linestyle_dict[label_str[:8]], label=label_str)
+        index += 1
+
+    plt.legend()
+    # chartBox = ax1.get_position()
+    # ax1.set_position([chartBox.x0, chartBox.y0, chartBox.width * 0.6, chartBox.height])
+    # ax1.legend(loc='upper center', bbox_to_anchor=(1.45, 0.8), shadow=True, ncol=1)
+    plt.xlabel("Pixel intensity", fontweight="bold", fontsize=12, labelpad=10)
+    # ax1.set_xlim(-500, 500)
+    # ax1.set_xscale("log")
+    plt.ylabel("Cumulative percent", fontweight="bold", fontsize=12, labelpad=10)
+    time_str = datetime.now().strftime("%Y_%m_%d.%H-%M-%S")
+
+    fig.savefig(f'{results_path}/cdf_{title}{time_str}.pdf',
+                format="pdf")
+    plt.close()
+
 if __name__ == '__main__':
     # root_path = "/Users/pappyhammer/Documents/academique/these_inmed/tbi_microglia_github/"
     root_path = "/media/julien/Not_today/tbi_microglia/"
@@ -705,35 +761,81 @@ if __name__ == '__main__':
     results_path = os.path.join(results_path, time_str)
     os.mkdir(results_path)
 
-    # results_id = "XYCTZ_Substack_9-16"
-    # tiff_file_name = os.path.join(data_path, "registered [XYCTZ] Substack (9-16).tif")
+    use_pre_computed_data = True
     mouses = ["Mouse 64", "Mouse 66"]
-    conditions = ["1d post injury", "Baseline", "Injury"]
-    subfolders = {"Injury": ["Before Injury", "After injury"],
-                  "Baseline": ["Before zoom", "After zoom"],
-                  "1d post injury": [""]}
+    precomputed_data_dir = os.path.join(root_path, "distributions")
+    if use_pre_computed_data:
+        distributions_dict = dict()
+        colors_dict = dict()
+        linestyle_dict = dict()
+        """
+        '-'	solid line style
+        '--'	dashed line style
+        '-.'	dash-dot line style
+        ':'	dotted line style
+        """
+        linestyles = ['-', '--', '-.', ':']
+        for mouse_index, mouse in enumerate(mouses):
+            print(f"## {mouse}")
+            linestyle_dict[mouse] = linestyles[mouse_index]
+            file_names = []
+            # look for filenames in the fisrst directory, if we don't break, it will go through all directories
+            for (dirpath, dirnames, local_filenames) in os.walk(precomputed_data_dir):
+                file_names.extend(local_filenames)
+                break
+            file_names = [f for f in file_names if f.startswith(mouse)]
+            fill_colors_dict = len(colors_dict) == 0
+            for file_name_index, file_name in enumerate(file_names):
+                distribution = np.load(os.path.join(precomputed_data_dir, file_name))
+                # session_id = file_name[len(mouse)+1:-4]
+                session_id = file_name[:-4]
+                index_avg = session_id.index("AVG")
+                session_id = session_id[:index_avg - 1]
+                if fill_colors_dict:
+                    # 8 is the length of the mouse id
+                    colors_dict[session_id[8:]] = BREWER_COLORS[file_name_index % len(BREWER_COLORS)]
+                pos_values = np.sum(distribution[distribution > 0])
+                neg_values = np.sum(np.abs(distribution[distribution < 0]))
 
-    for mouse in mouses:
-        for condition in conditions:
-            for subfolder in subfolders[condition]:
-                if subfolder == "":
-                    current_data_path = os.path.join(data_path, mouse, condition)
+                if pos_values > neg_values:
+                    print(f"{session_id} > 0: {np.round(pos_values, 2)} vs {-1*np.round(neg_values, 2)}")
                 else:
-                    current_data_path = os.path.join(data_path, mouse, condition, subfolder)
+                    print(f"{session_id} < 0: {-1*np.round(neg_values, 2)} vs {np.round(pos_values, 2)}")
 
-                # then we look for all tif files starting with a f
-                file_names = []
-                # look for filenames in the fisrst directory, if we don't break, it will go through all directories
-                for (dirpath, dirnames, local_filenames) in os.walk(current_data_path):
-                    file_names.extend(local_filenames)
-                    break
-                file_names = [f for f in file_names if f.startswith("f") and f.endswith(".tiff")]
-                for tiff_file_name in file_names:
-                    results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-5]
-                    print(f"## Analyzing  {results_id}")
-                    analyze_movie(tiff_file_name=os.path.join(current_data_path, tiff_file_name),
-                                  results_id=results_id, results_path=results_path)
-                    print("")
-        #         break
-        #     break
-        # break
+                distributions_dict[session_id] = distribution
+        # BREWER_COLORS[index % len(BREWER_COLORS)]
+        plot_cdf_from_distributions(distributions_dict, results_path, colors_dict=colors_dict,
+                                    linestyle_dict=linestyle_dict, title=f"{'_'.join(mouses)}_")
+    else:
+        # results_id = "XYCTZ_Substack_9-16"
+        # tiff_file_name = os.path.join(data_path, "registered [XYCTZ] Substack (9-16).tif")
+        conditions = ["1d post injury", "Baseline", "Injury"]
+        subfolders = {"Injury": ["Before injury", "After injury"],
+                      "Baseline": ["Before zoom", "After zoom"],
+                      "1d post injury": [""]}
+
+        for mouse in mouses:
+            for condition in conditions:
+                for subfolder in subfolders[condition]:
+                    if subfolder == "":
+                        current_data_path = os.path.join(data_path, mouse, condition)
+                    else:
+                        current_data_path = os.path.join(data_path, mouse, condition, subfolder)
+
+                    # then we look for all tif files starting with a f
+                    file_names = []
+                    # look for filenames in the fisrst directory, if we don't break, it will go through all directories
+                    for (dirpath, dirnames, local_filenames) in os.walk(current_data_path):
+                        file_names.extend(local_filenames)
+                        break
+
+                    file_names = [f for f in file_names if f.startswith("AVG") and f.endswith(".tif")]
+                    for tiff_file_name in file_names:
+                        results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-4]
+                        print(f"## Analyzing  {results_id}")
+                        analyze_movie(tiff_file_name=os.path.join(current_data_path, tiff_file_name),
+                                      results_id=results_id, results_path=results_path)
+                        print("")
+            #         break
+            #     break
+            # break
