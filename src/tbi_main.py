@@ -9,6 +9,7 @@ import matplotlib.cm as cm
 import cv2
 import tifffile
 from bisect import bisect_right
+import scipy.ndimage
 
 
 # qualitative 12 colors : http://colorbrewer2.org/?type=qualitative&scheme=Paired&n=12 + 11 diverting
@@ -41,6 +42,9 @@ def plot_hist_distribution(distribution_data, description, param=None, values_to
     :return:
     """
     distribution = np.array(distribution_data)
+    if len(distribution) == 0:
+        print(f"Empty distribution for {description}")
+        return
     if color_to_use is None:
         hist_color = "blue"
     else:
@@ -184,12 +188,44 @@ def crop_movie(centroid_cell, movie, max_width, max_height):
     len_frame_x = movie.shape[2]
     len_frame_y = movie.shape[1]
 
-    #### NEW VERSION, the cell is centered ####
-
     # calculating the bound that will surround all the cells
+    minx = None
+    maxx = None
+    miny = None
+    maxy = None
 
-    minx = int(centroid_cell[0]) - int(max_height // 2)
-    miny = int(centroid_cell[1]) - int(max_width // 2)
+    min_x_centroid = int(centroid_cell[0]) - int(max_height // 2)
+    max_x_centroid = min_x_centroid + max_height - 1
+    min_y_centroid = int(centroid_cell[1]) - int(max_width // 2)
+    max_y_centroid = min_y_centroid + max_width - 1
+
+    minx = min_x_centroid
+    maxx = max_x_centroid
+    miny = min_y_centroid
+    maxy = max_y_centroid
+
+    # poly_gon_cell = coord_obj.cells_polygon[cell]
+    # minx_cell, miny_cell, maxx_cell, maxy_cell = np.array(list(poly_gon_cell.bounds)).astype(int)
+
+    # trying to put the cell in, first by centering the frame around the centroid if necessary
+    # then if some part of the cell still are out, we use the min of the cell
+    # if min_x_centroid < minx:
+    #     minx = min_x_centroid
+    # # if minx_cell < minx:
+    # #     minx = minx_cell
+    # if min_y_centroid < miny:
+    #     miny = min_y_centroid
+    # # if miny_cell < miny:
+    # #     miny = miny_cell
+    #
+    # if (minx + max_height - 1) < max_x_centroid:
+    #     minx = max_x_centroid - max_height + 1
+    # # if (minx + max_height - 1) < maxx_cell:
+    # #     minx = maxx_cell - max_height + 1
+    # if (maxy + max_width - 1) < max_y_centroid:
+    #     miny = max_y_centroid - max_width + 1
+    # if (miny + max_width - 1) < maxy_cell:
+    #     miny = maxy_cell - max_width + 1
 
     # then we make sure we don't over go the border
     minx = max(0, minx)
@@ -201,6 +237,26 @@ def crop_movie(centroid_cell, movie, max_width, max_height):
 
     maxx = minx + max_height - 1
     maxy = miny + max_width - 1
+    """
+        old version changed the 11th of October
+        #### NEW VERSION, the cell is centered ####
+    
+        # calculating the bound that will surround all the cells
+    
+        minx = int(centroid_cell[0]) - int(max_height // 2)
+        miny = int(centroid_cell[1]) - int(max_width // 2)
+    
+        # then we make sure we don't over go the border
+        minx = max(0, minx)
+        miny = max(0, miny)
+        if minx + max_height >= len_frame_x:
+            minx = len_frame_x - max_height - 1
+        if miny + max_width >= len_frame_y:
+            miny = len_frame_y - max_width - 1
+    
+        maxx = minx + max_height - 1
+        maxy = miny + max_width - 1
+    """
 
     return movie[:, miny:maxy + 1, minx:maxx + 1]
 
@@ -249,7 +305,8 @@ def get_x_y_translation_blob(imgs):
     return np.array(x_y_translations)
 
 
-def binarized_frame(movie_frame, filled_value=1, percentile_threshold=90, threshold_value=None, with_uint=True):
+def binarized_frame(movie_frame, filled_value=1, percentile_threshold=90, threshold_value=None, with_uint=True,
+                    keep_original_values=False):
     """
     Take a 2d-array and return a binarized version, thresholding using a percentile value.
     It could be filled with 1 or another value
@@ -267,8 +324,11 @@ def binarized_frame(movie_frame, filled_value=1, percentile_threshold=90, thresh
     else:
         threshold = threshold_value
 
+    # print(f"in binarized_frame threshold {threshold_value}, max : {np.max(img)}")
+
     img[img < threshold] = 0
-    img[img >= threshold] = filled_value
+    if not keep_original_values:
+        img[img >= threshold] = filled_value
 
     if with_uint:
         img = img.astype("uint8")
@@ -277,11 +337,11 @@ def binarized_frame(movie_frame, filled_value=1, percentile_threshold=90, thresh
     return img
 
 
-def max_diff_bw_frames(cell_movie, cell_id):
+def max_diff_bw_frames(cell_movie, cell_id, data_id=None):
     """
     Take a movie, apply a threshold, binarize it, then make the diff between each frame but
     the a x-y translation is applied between each contiguous frame in order to minimize the diff.
-    Diff is actually the sum of binary pixels after substracting the previous frame to the next.
+    Diff is actually the sum of binary pixels after substracting the previous frame to the next. (frames[index] - frames[index-1])
     This sum give an idea of the retraction or not of axons.
     Args:
         cell_movie:
@@ -290,37 +350,89 @@ def max_diff_bw_frames(cell_movie, cell_id):
 
     """
 
-    x_y_translation_max_range = 5
+    x_y_translation_max_range = 6
     x_y_translation_range = [0]
     for i in range(1, x_y_translation_max_range):
         x_y_translation_range.append(i)
         x_y_translation_range.append(-i)
 
-    binary_cell_movie = np.zeros(cell_movie.shape, dtype="int8")
-    binary_diff_cell_movie = np.zeros(cell_movie.shape, dtype="int8")
-    percentile_threshold = 80
-    threshold_value = np.percentile(cell_movie, percentile_threshold)
-    high_threshold_value = np.percentile(cell_movie, 98)
+    scale_abs_movie = np.zeros(cell_movie.shape, dtype="uint8")
     for frame_index, frame_movie in enumerate(cell_movie):
-        binary_frame = binarized_frame(movie_frame=frame_movie, filled_value=1, threshold_value=threshold_value,
-                                       percentile_threshold=percentile_threshold, with_uint=False)
-        binary_cell_movie[frame_index] = binary_frame
+        frame_movie = cv2.normalize(frame_movie, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        # convertScaleAbs raise issues when processing 32 bit images
+        # frame_movie = cv2.convertScaleAbs(frame_movie)
 
-        binary_diff_frame = binarized_frame(movie_frame=frame_movie, filled_value=1,
-                                       percentile_threshold=98, threshold_value=high_threshold_value,
-                                            with_uint=False)
-        binary_diff_cell_movie[frame_index] = binary_diff_frame
+        # frame_movie = cv2.addWeighted(frame_movie, alpha=255, src2=0, beta=0, gamma=0, dtype=cv2.CV_8U)
+        scale_abs_movie[frame_index] = frame_movie
+    binary_cell_movie = np.zeros(cell_movie.shape, dtype="int8")
+    # binary_diff_cell_movie = np.zeros(cell_movie.shape, dtype="int8")
+    percentile_threshold = 90
+    threshold_value = np.percentile(scale_abs_movie, percentile_threshold)
+    high_threshold_value = np.percentile(scale_abs_movie, 98)
+    # print(f"threshold_value {threshold_value}")
+    for frame_index, frame_movie in enumerate(scale_abs_movie):
+        # frame_movie = cv2.convertScaleAbs(frame_movie)
+        # threshold_value = 200
+        binary_frame = binarized_frame(movie_frame=frame_movie, filled_value=1, threshold_value=threshold_value,
+                                       percentile_threshold=percentile_threshold, with_uint=False,
+                                       keep_original_values=False)
+        binary_cell_movie[frame_index] = binary_frame
+        n_pixels_above_threshold = np.where(frame_movie >= threshold_value)[0].shape
+        if n_pixels_above_threshold[0] < 10:
+            print(f"Instanciating binary_cell_movie {frame_index} {cell_id} {data_id}, "
+                  f"sum {np.sum(binary_cell_movie[frame_index])}, {n_pixels_above_threshold} {np.max(frame_movie)}")
+
+        if threshold_value == 255:
+            f, (ax1, ax2) = plt.subplots(1, 2)
+            ax1.imshow(cell_movie[frame_index], cmap=cm.Greys)
+            ax1.set_title(f"Original")
+            ax2.imshow(frame_movie, cmap=cm.Greys)
+            ax2.set_title(f"ScaleAbs")
+            plt.show()
+        """
+        frame_movie = cv2.convertScaleAbs(frame_movie)
+        # print(f"np.max(frame_movie) {np.max(frame_movie)}")
+        plt.imshow(frame_movie, cmap=cm.Greys)
+        plt.title(f"{frame_index + 1}")
+        plt.show()
+        # Applying Histogram Equalization
+        # frame_movie = cv2.equalizeHist(frame_movie)
+
+        # Denoising
+        # frame_movie = cv2.fastNlMeansDenoising(frame_movie)
+        # plt.imshow(frame_movie, cmap=cm.Greys)
+        # plt.title(f"After denoising")
+        # plt.show()
+        # Gaussian Local Thresholding
+        binary_frame = cv2.adaptiveThreshold(frame_movie, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, \
+                                          cv2.THRESH_BINARY, 11, 0)
+        plt.imshow(frame_movie, cmap=cm.Greys)
+        plt.title(f"After Thresholding")
+        plt.show()
+        
+        """
+        # binary_diff_frame = binarized_frame(movie_frame=frame_movie, filled_value=1,
+        #                                percentile_threshold=98, threshold_value=high_threshold_value,
+        #                                     with_uint=False)
+        # binary_diff_cell_movie[frame_index] = binary_diff_frame
 
         test_display = False
         if test_display: # or cell_id == 157:
-            print(f"threshold_value {threshold_value}")
-            plt.imshow(binary_diff_frame, cmap=cm.Greys)
-            plt.title(f"{frame_index+1}")
-            plt.show()
-            tmp_frame = np.zeros(cell_movie[-1].shape, dtype="int16")
-            tmp_frame[np.where(binary_diff_frame)] = cell_movie[frame_index][np.where(binary_diff_frame)]
-            plt.imshow(tmp_frame, cmap=cm.Greys)
-            plt.title(f"{frame_index+1}")
+            f, (ax1, ax2) = plt.subplots(1, 2)
+            # ax1.imshow(frame_movie.astype(np.uint16), cmap=cm.Greys)
+
+            ax1.imshow(frame_movie, cmap=cm.Greys)
+            ax1.set_title(f"ScaleAbs thr {int(threshold_value)}")
+            # ax1.imshow(cv2.convertScaleAbs(frame_movie), cmap=cm.Greys)
+            # ax1.set_title(f"uint8 {data_id} {cell_id}")
+            # print(f"threshold_value {threshold_value}")
+            ax2.imshow(binary_frame, cmap=cm.Greys)
+            ax2.set_title(f"Binarized")
+            # tmp_frame = np.zeros(cell_movie[-1].shape, dtype="int16")
+            # tmp_frame[np.where(binary_diff_frame)] = cell_movie[frame_index][np.where(binary_diff_frame)]
+            # ax3.imshow(tmp_frame, cmap=cm.Greys)
+            # ax3.set_title(f"{frame_index+1}")
+            plt.title(f"{data_id} {cell_id} {frame_index+1}")
             plt.show()
 
     registered_movie = np.full(cell_movie.shape, 0, dtype="int16")
@@ -333,7 +445,7 @@ def max_diff_bw_frames(cell_movie, cell_id):
 
     diff_sums = []
 
-    with_binary_diff_cell_movie = False
+    # with_binary_diff_cell_movie = False
 
     for frame_index in np.arange(1, len(cell_movie)):
         best_x_y_translation = None
@@ -344,61 +456,44 @@ def max_diff_bw_frames(cell_movie, cell_id):
             for y_mvt in x_y_translation_range:
                 tmp_frame = np.zeros(cell_movie[-1].shape, dtype="int8")
 
-                if with_binary_diff_cell_movie:
-                    translate_frame(frame_to_translate=binary_diff_cell_movie[frame_index],
-                                    frame_destination=tmp_frame,
-                                    x_mvt=x_mvt, y_mvt=y_mvt)
-                    # if cell_id == 157 and frame_index == 3:
-                    #     print(f"np.sum(tmp_frame) {np.sum(tmp_frame)}, "
-                    #           f"np.sum(binary_diff_cell_movie[frame_index - 1]) "
-                    #                           f"{np.sum(binary_diff_cell_movie[frame_index - 1])}")
-                        # plt.imshow(binary_diff_cell_movie[frame_index - 1], cmap=cm.Greys)
-                        # plt.title(f"{frame_index - 1}")
-                        # plt.show()
-                        # plt.imshow(tmp_frame, cmap=cm.Greys)
-                        # plt.title(f"tmp_frame {frame_index - 1}")
-                        # plt.show()
-                    # using np.abs to put value at -1 to 1
-                    diff_sum = np.sum(np.abs(tmp_frame - binary_diff_cell_movie[frame_index - 1]))
-                    # if cell_id == 157 and frame_index == 3:
-                    #     print(f"diff_sum {diff_sum}")
-                    # we want the diff the closest from 0 at possible
-                    # if best_diff_value is not None:
-                    #     if abs(best_diff_value) == abs(diff_sum):
-                    #         if np.sum(np.abs(best_x_y_translation)) > np.sum(np.abs((x_mvt, y_mvt))):
-                    #             print("Both abs are equals")
-                    #             print(f"{np.sum(np.abs(best_x_y_translation))} vs {np.sum(np.abs((x_mvt, y_mvt)))}")
-                    if (best_diff_value is None) or (abs(best_diff_value) > abs(diff_sum)) or \
-                            ((abs(best_diff_value) == abs(diff_sum)) and (np.sum(np.abs(best_x_y_translation)) >
-                                                                          (np.sum(np.abs((x_mvt, y_mvt)))))):
-                        best_diff_value = diff_sum
-                        tmp_frame = np.zeros(cell_movie[-1].shape, dtype="int8")
-                        translate_frame(frame_to_translate=binary_cell_movie[frame_index],
-                                        frame_destination=tmp_frame,
-                                        x_mvt=x_mvt, y_mvt=y_mvt)
-                        # keeping negative values for plotting the diff
-                        diff_sum = np.sum(tmp_frame - binary_cell_movie[frame_index - 1])
-                        best_final_diff_value = diff_sum
-                        best_x_y_translation = (x_mvt, y_mvt)
-                else:
-                    translate_frame(frame_to_translate=binary_cell_movie[frame_index],
-                                    frame_destination=tmp_frame,
-                                    x_mvt=x_mvt, y_mvt=y_mvt)
-                    # using np.abs to put value at -1 to 1
-                    diff_sum = np.sum(np.abs(tmp_frame - binary_cell_movie[frame_index - 1]))
-                    # if cell_id == 157 and frame_index == 3:
-                    #     print(f"diff_sum {diff_sum}")
-                    # we want the diff the closest from 0 at possible
-                    # if diff value are equals, we want to minimize the xy_translation
-                    if (best_diff_value is None) or (abs(best_diff_value) > abs(diff_sum)) or \
-                            ((abs(best_diff_value) == abs(diff_sum)) and (np.sum(np.abs(best_x_y_translation)) >
-                                                                          (np.sum(np.abs((x_mvt, y_mvt)))))):
-                        # dealing with equality
-                        best_diff_value = diff_sum
-                        # keeping negative values for plotting the diff
-                        diff_sum = np.sum(tmp_frame - binary_cell_movie[frame_index - 1])
-                        best_final_diff_value = diff_sum
-                        best_x_y_translation = (x_mvt, y_mvt)
+                translate_frame(frame_to_translate=binary_cell_movie[frame_index],
+                                frame_destination=tmp_frame,
+                                x_mvt=x_mvt, y_mvt=y_mvt)
+                # TODO: discard pixels at zeros due to registration
+                # using np.abs to put value at -1 to 1
+                diff_sum = np.sum(np.abs(tmp_frame - binary_cell_movie[frame_index - 1]))
+                if False and (diff_sum == 0) and (x_mvt == x_y_translation_range[0]) and (y_mvt == x_y_translation_range[0]):
+                # if  (x_mvt == x_y_translation_range[0]) and (y_mvt == x_y_translation_range[0]):
+                    print(f"Plot diff sum {frame_index} {cell_id}  {data_id}")
+                    f, (ax1, ax2,) = plt.subplots(1, 2)
+                    # ax1.imshow(frame_movie.astype(np.uint16), cmap=cm.Greys)
+                    print(f"## {frame_index} threshold_value {int(threshold_value)} sum {np.sum(binary_cell_movie[frame_index])}")
+                    ax1.imshow(scale_abs_movie[frame_index], cmap=cm.Greys)
+                    ax1.set_title(f"ScaleAbs thr {int(threshold_value)}")
+                    # ax1.imshow(cv2.convertScaleAbs(frame_movie), cmap=cm.Greys)
+                    # ax1.set_title(f"uint8 {data_id} {cell_id}")
+                    # print(f"threshold_value {threshold_value}")
+                    ax2.imshow(binary_cell_movie[frame_index], cmap=cm.Greys)
+                    ax2.set_title(f"Binarized")
+                    # tmp_frame = np.zeros(cell_movie[-1].shape, dtype="int16")
+                    # tmp_frame[np.where(binary_diff_frame)] = cell_movie[frame_index][np.where(binary_diff_frame)]
+                    # ax3.imshow(tmp_frame, cmap=cm.Greys)
+                    # ax3.set_title(f"{frame_index+1}")
+                    plt.show()
+                # if cell_id == 157 and frame_index == 3:
+                #     print(f"diff_sum {diff_sum}")
+                # we want the diff the closest from 0 at possible
+                # if diff value are equals, we want to minimize the xy_translation
+                if (best_diff_value is None) or (abs(best_diff_value) > abs(diff_sum)) or \
+                        ((abs(best_diff_value) == abs(diff_sum)) and (np.sum(np.abs(best_x_y_translation)) >
+                                                                      (np.sum(np.abs((x_mvt, y_mvt)))))):
+                    # dealing with equality
+                    best_diff_value = diff_sum
+                    # keeping negative values for plotting the diff
+                    diff_sum = np.sum(tmp_frame - binary_cell_movie[frame_index - 1])
+                    # print(f'diff_sum {diff_sum}')
+                    best_final_diff_value = diff_sum
+                    best_x_y_translation = (x_mvt, y_mvt)
 
         x_mvt = best_x_y_translation[0]
         y_mvt = best_x_y_translation[1]
@@ -410,6 +505,20 @@ def max_diff_bw_frames(cell_movie, cell_id):
                         frame_destination=registered_binary_movie[frame_index],
                         x_mvt=x_mvt, y_mvt=y_mvt)
 
+        show_best_translation = False
+        if show_best_translation:
+            f, (ax1, ax2, ax3) = plt.subplots(1, 3)
+            # ax1.imshow(frame_movie.astype(np.uint16), cmap=cm.Greys)
+
+            ax1.imshow(binary_cell_movie[frame_index], cmap=cm.Greys)
+            ax1.set_title(f"Original")
+            ax2.imshow(registered_binary_movie[frame_index], cmap=cm.Greys)
+            ax2.set_title(f"Registered x {x_mvt} y {y_mvt}")
+            ax3.imshow(registered_binary_movie[frame_index - 1], cmap=cm.Greys)
+            ax3.set_title(f"Previous frame")
+            # plt.title(f"{data_id} {cell_id} {frame_index + 1}")
+            plt.show()
+
         # changing current frame
         translate_frame(frame_to_translate=binary_cell_movie[frame_index],
                         frame_destination=binary_cell_movie[frame_index],
@@ -420,9 +529,9 @@ def max_diff_bw_frames(cell_movie, cell_id):
             translate_frame(frame_to_translate=binary_cell_movie[frame_index+1],
                             frame_destination=binary_cell_movie[frame_index+1],
                             x_mvt=x_mvt, y_mvt=y_mvt)
-            translate_frame(frame_to_translate=binary_diff_cell_movie[frame_index + 1],
-                            frame_destination=binary_diff_cell_movie[frame_index + 1],
-                            x_mvt=x_mvt, y_mvt=y_mvt)
+            # translate_frame(frame_to_translate=binary_diff_cell_movie[frame_index + 1],
+            #                 frame_destination=binary_diff_cell_movie[frame_index + 1],
+            #                 x_mvt=x_mvt, y_mvt=y_mvt)
             translate_frame(frame_to_translate=cell_movie[frame_index + 1],
                             frame_destination=cell_movie[frame_index + 1],
                             x_mvt=x_mvt, y_mvt=y_mvt)
@@ -431,9 +540,9 @@ def max_diff_bw_frames(cell_movie, cell_id):
 
         # print(f"best_diff_value {best_diff_value}")
         diff_sums.append(best_final_diff_value)
-    if cell_id == 157:
-        print(f"x_y_translations {x_y_translations}")
-        print(f"diff_sums        {diff_sums}")
+    # if cell_id == 157:
+    #     print(f"x_y_translations {x_y_translations}")
+    #     print(f"diff_sums        {diff_sums}")
     return registered_movie, registered_binary_movie, x_y_translations, diff_sums
 
 
@@ -507,24 +616,25 @@ def translate_frame(frame_to_translate, frame_destination, x_mvt, y_mvt):
     Returns:
 
     """
-    if x_mvt == 0 and y_mvt == 0:
-        frame_destination[:] = frame_to_translate
-    elif x_mvt < 0 and y_mvt == 0:
-        frame_destination[:x_mvt, :] = frame_to_translate[-x_mvt:, :]
-    elif x_mvt > 0 and y_mvt == 0:
-        frame_destination[x_mvt:, :] = frame_to_translate[:-x_mvt, :]
-    elif y_mvt < 0 and x_mvt == 0:
-        frame_destination[:, :y_mvt] = frame_to_translate[:, -y_mvt:]
-    elif y_mvt > 0 and x_mvt == 0:
-        frame_destination[:, y_mvt:] = frame_to_translate[:, :-y_mvt]
-    elif x_mvt < 0 and y_mvt < 0:
-        frame_destination[:x_mvt, :y_mvt] = frame_to_translate[-x_mvt:, -y_mvt:]
-    elif x_mvt > 0 and y_mvt > 0:
-        frame_destination[x_mvt:, y_mvt:] = frame_to_translate[:-x_mvt, :-y_mvt]
-    elif x_mvt > 0 and y_mvt < 0:
-        frame_destination[x_mvt:, :y_mvt] = frame_to_translate[:-x_mvt, -y_mvt:]
-    elif x_mvt < 0 and y_mvt > 0:
-        frame_destination[:x_mvt, y_mvt:] = frame_to_translate[-x_mvt:, :-y_mvt]
+    scipy.ndimage.shift(frame_to_translate, shift=(x_mvt, y_mvt), output=frame_destination)
+    # if x_mvt == 0 and y_mvt == 0:
+    #     frame_destination[:] = frame_to_translate
+    # elif x_mvt < 0 and y_mvt == 0:
+    #     frame_destination[:x_mvt, :] = frame_to_translate[-x_mvt:, :]
+    # elif x_mvt > 0 and y_mvt == 0:
+    #     frame_destination[x_mvt:, :] = frame_to_translate[:-x_mvt, :]
+    # elif y_mvt < 0 and x_mvt == 0:
+    #     frame_destination[:, :y_mvt] = frame_to_translate[:, -y_mvt:]
+    # elif y_mvt > 0 and x_mvt == 0:
+    #     frame_destination[:, y_mvt:] = frame_to_translate[:, :-y_mvt]
+    # elif x_mvt < 0 and y_mvt < 0:
+    #     frame_destination[:x_mvt, :y_mvt] = frame_to_translate[-x_mvt:, -y_mvt:]
+    # elif x_mvt > 0 and y_mvt > 0:
+    #     frame_destination[x_mvt:, y_mvt:] = frame_to_translate[:-x_mvt, :-y_mvt]
+    # elif x_mvt > 0 and y_mvt < 0:
+    #     frame_destination[x_mvt:, :y_mvt] = frame_to_translate[:-x_mvt, -y_mvt:]
+    # elif x_mvt < 0 and y_mvt > 0:
+    #     frame_destination[:x_mvt, y_mvt:] = frame_to_translate[-x_mvt:, :-y_mvt]
 
 
 def load_tiff_movie(tiff_file_name):
@@ -666,9 +776,10 @@ def analyze_movie(tiff_file_name, results_id, results_path):
             # print(f"{cell_movie_index}_{results_id}")
             registered_movie, registered_binary_movie, \
             x_y_translations, diff_sums = max_diff_bw_frames(cell_movie.copy(),
-                                                             cell_id=cell_movie_index)
+                                                             cell_id=cell_movie_index,
+                                                             data_id=results_id)
             all_diff_sums.extend(diff_sums)
-
+            # print(f"{cell_movie_index}_new_{results_id} {x_y_translations}")
             save_array_as_tiff(array_to_save=registered_movie, path_results=new_results_path,
                                file_name=f"{cell_movie_index}_new_{results_id}.tiff")
             save_array_as_tiff(array_to_save=cell_movie, path_results=new_results_path,
@@ -685,7 +796,9 @@ def analyze_movie(tiff_file_name, results_id, results_path):
                 save_array_as_tiff(array_to_save=cell_movie, path_results=new_results_path,
                                    file_name=f"{cell_movie_index}_{results_id}.tiff")
 
-    # TODO: Doing the diff between the different images, take the minimum diff after trying a few sliding over the window
+    # TODO: Doing the diff between the different images,
+    #  take the minimum diff after trying a few sliding over the window
+    # print(f"all_diff_sums {all_diff_sums}")
     plot_hist_distribution(distribution_data=all_diff_sums,
                            description=f"hist_prediction_distribution_diffs_{results_id}",
                            path_results=results_path,
@@ -695,8 +808,7 @@ def analyze_movie(tiff_file_name, results_id, results_path):
                            save_formats="png")
     np.save(os.path.join(results_path, results_id + ".npy"), all_diff_sums)
 
-
-def plot_cdf_from_distributions(distributions_dict, results_path, colors_dict, linestyle_dict, title=""):
+def plot_cdf_from_distributions(distributions_dict, results_path, colors_dict, linestyle_dict, len_dict_key=8, title=""):
     # conditions = ['H', 'N', 'F']
     # conditions_color = {'H': "red", 'N': "blue", 'F': "black"}
     # distributions_dict = dict()
@@ -732,8 +844,9 @@ def plot_cdf_from_distributions(distributions_dict, results_path, colors_dict, l
     index = 0
     for key, cdf in cdf_dict.items():
         label_str = key
-        ax1.plot(intensity_intervals, cdf, c=colors_dict[label_str[8:]], linewidth=1.5,
-                 ls=linestyle_dict[label_str[:8]], label=label_str)
+        if label_str[len_dict_key:] in colors_dict:
+            ax1.plot(intensity_intervals, cdf, c=colors_dict[label_str[len_dict_key:]], linewidth=1.5,
+                     ls=linestyle_dict[label_str[:len_dict_key]], label=label_str)
         index += 1
 
     plt.legend()
@@ -750,10 +863,30 @@ def plot_cdf_from_distributions(distributions_dict, results_path, colors_dict, l
                 format="pdf")
     plt.close()
 
+def find_dir_with_keywords(path_to_explore, keyword):
+    """
+    Case insensitive
+    :param path_to_explore:
+    :param keyword:
+    :return:
+    """
+    dir_names = []
+    # look for filenames in the fisrst directory, if we don't break, it will go through all directories
+    for (dirpath, dirnames, local_filenames) in os.walk(path_to_explore):
+        dir_names.extend(dirnames)
+        break
+    dir_names = [d for d in dir_names if keyword.lower() in d.lower()]
+
+    return dir_names
+
 if __name__ == '__main__':
     # root_path = "/Users/pappyhammer/Documents/academique/these_inmed/tbi_microglia_github/"
+    first_data_version = False
     root_path = "/media/julien/Not_today/tbi_microglia/"
-    data_path = os.path.join(root_path, "data/")
+    if first_data_version:
+        data_path = os.path.join(root_path, "data/")
+    else:
+        data_path = os.path.join(root_path, "data/Microglia in vivo/")
 
     results_path = os.path.join(root_path, "results")
     time_str = datetime.now().strftime("%Y_%m_%d.%H-%M-%S")
@@ -762,65 +895,99 @@ if __name__ == '__main__':
     os.mkdir(results_path)
 
     use_pre_computed_data = True
-    mouses = ["Mouse 64", "Mouse 66"]
+    if first_data_version:
+        all_mice = ["Mouse 64", "Mouse 66"]
+        len_dict_key = 8
+    else:
+        all_mice = ["M1", "M2", "M3", "M4", "M6"]
+        len_dict_key = 2
+
     precomputed_data_dir = os.path.join(root_path, "distributions")
     if use_pre_computed_data:
-        distributions_dict = dict()
-        colors_dict = dict()
-        linestyle_dict = dict()
         """
         '-'	solid line style
         '--'	dashed line style
         '-.'	dash-dot line style
         ':'	dotted line style
         """
-        linestyles = ['-', '--', '-.', ':']
-        for mouse_index, mouse in enumerate(mouses):
-            print(f"## {mouse}")
-            linestyle_dict[mouse] = linestyles[mouse_index]
-            file_names = []
-            # look for filenames in the fisrst directory, if we don't break, it will go through all directories
-            for (dirpath, dirnames, local_filenames) in os.walk(precomputed_data_dir):
-                file_names.extend(local_filenames)
-                break
-            file_names = [f for f in file_names if f.startswith(mouse)]
-            fill_colors_dict = len(colors_dict) == 0
-            for file_name_index, file_name in enumerate(file_names):
-                distribution = np.load(os.path.join(precomputed_data_dir, file_name))
-                # session_id = file_name[len(mouse)+1:-4]
-                session_id = file_name[:-4]
-                index_avg = session_id.index("AVG")
-                session_id = session_id[:index_avg - 1]
-                if fill_colors_dict:
-                    # 8 is the length of the mouse id
-                    colors_dict[session_id[8:]] = BREWER_COLORS[file_name_index % len(BREWER_COLORS)]
-                pos_values = np.sum(distribution[distribution > 0])
-                neg_values = np.sum(np.abs(distribution[distribution < 0]))
+        linestyles = ['-', '--', '-.', ':', '-']
+        # we do pair of all_mice
+        pairs_of_mice = [(all_mice[i], all_mice[j]) for i in range(len(all_mice))
+                          for j in range(i + 1, len(all_mice))]
+        colors_dict = dict()
+        for mice in pairs_of_mice:
+            distributions_dict = dict()
+            linestyle_dict = dict()
+            for mouse_index, mouse in enumerate(mice):
+                print(f"## {mouse}")
+                linestyle_dict[mouse] = linestyles[mouse_index]
+                file_names = []
+                # look for filenames in the fisrst directory, if we don't break, it will go through all directories
+                for (dirpath, dirnames, local_filenames) in os.walk(precomputed_data_dir):
+                    file_names.extend(local_filenames)
+                    break
+                file_names = [f for f in file_names if f.startswith(mouse)]
+                fill_colors_dict = len(colors_dict) == 0
+                for file_name_index, file_name in enumerate(file_names):
+                    distribution = np.load(os.path.join(precomputed_data_dir, file_name))
+                    # session_id = file_name[len(mouse)+1:-4]
+                    session_id = file_name[:-4]
+                    index_avg = session_id.index("AVG")
+                    session_id = session_id[:index_avg - 1]
+                    if fill_colors_dict:
+                        # 8 is the length of the mouse id
+                        colors_dict[session_id[len_dict_key:]] = BREWER_COLORS[file_name_index % len(BREWER_COLORS)]
+                    pos_values = np.sum(distribution[distribution > 0])
+                    neg_values = np.sum(np.abs(distribution[distribution < 0]))
 
-                if pos_values > neg_values:
-                    print(f"{session_id} > 0: {np.round(pos_values, 2)} vs {-1*np.round(neg_values, 2)}")
-                else:
-                    print(f"{session_id} < 0: {-1*np.round(neg_values, 2)} vs {np.round(pos_values, 2)}")
+                    if pos_values > neg_values:
+                        print(f"{session_id} > 0: {np.round(pos_values, 2)} vs {-1*np.round(neg_values, 2)}")
+                    else:
+                        print(f"{session_id} < 0: {-1*np.round(neg_values, 2)} vs {np.round(pos_values, 2)}")
 
-                distributions_dict[session_id] = distribution
-        # BREWER_COLORS[index % len(BREWER_COLORS)]
-        plot_cdf_from_distributions(distributions_dict, results_path, colors_dict=colors_dict,
-                                    linestyle_dict=linestyle_dict, title=f"{'_'.join(mouses)}_")
+                    distributions_dict[session_id] = distribution
+            # BREWER_COLORS[index % len(BREWER_COLORS)]
+            plot_cdf_from_distributions(distributions_dict, results_path, colors_dict=colors_dict,
+                                        linestyle_dict=linestyle_dict, title=f"{'_'.join(mice)}_",
+                                        len_dict_key=len_dict_key)
     else:
         # results_id = "XYCTZ_Substack_9-16"
         # tiff_file_name = os.path.join(data_path, "registered [XYCTZ] Substack (9-16).tif")
-        conditions = ["1d post injury", "Baseline", "Injury"]
-        subfolders = {"Injury": ["Before injury", "After injury"],
-                      "Baseline": ["Before zoom", "After zoom"],
-                      "1d post injury": [""]}
+        if first_data_version:
+            conditions = ["1d post injury", "Baseline", "Injury"]
+            subfolders = {"Injury": ["Before injury", "After injury"],
+                          "Baseline": ["Before zoom", "After zoom"],
+                          "1d post injury": [""]}
+        else:
+            conditions = ["Injury day", "1d post injury", "3d post injury", "5d post injury"]
+            subfolders = {"Injury day": ["1h post injury", "30min baseline"],
+                          "1d post injury": [""],
+                          "3d post injury": [""],
+                          "5d post injury": [""]}
 
-        for mouse in mouses:
+        for mouse in all_mice:
+            mouse_path = find_dir_with_keywords(data_path, mouse)
+            if len(mouse_path) == 0:
+                raise Exception(f"{mouse} not found in {data_path}")
+            else:
+                mouse_path = os.path.join(data_path, mouse_path[0])
             for condition in conditions:
+                condition_path = find_dir_with_keywords(mouse_path, condition)
+                if len(condition_path) == 0:
+                    # raise Exception(f"{condition} not found in {mouse_path}")
+                    print(f"{condition} not found in {mouse_path}")
+                    continue
+                else:
+                    condition_path = os.path.join(mouse_path, condition_path[0])
                 for subfolder in subfolders[condition]:
                     if subfolder == "":
-                        current_data_path = os.path.join(data_path, mouse, condition)
+                        current_data_path = condition_path
                     else:
-                        current_data_path = os.path.join(data_path, mouse, condition, subfolder)
+                        current_data_path = find_dir_with_keywords(condition_path, subfolder)
+                        if len(current_data_path) == 0:
+                            raise Exception(f"{subfolder} not found in {condition_path}")
+                        else:
+                            current_data_path = os.path.join(condition_path, current_data_path[0])
 
                     # then we look for all tif files starting with a f
                     file_names = []
@@ -829,9 +996,17 @@ if __name__ == '__main__':
                         file_names.extend(local_filenames)
                         break
 
-                    file_names = [f for f in file_names if f.startswith("AVG") and f.endswith(".tif")]
+                    # if first_data_version:
+                    file_names = [f for f in file_names if "AVG" in f and (f.endswith(".tif") or f.endswith(".tiff"))]
+                    # else:
+                    #     file_names = [f for f in file_names if (not f.startswith(".")) and
+                    #                   (f.endswith(".tif") or f.endswith(".tiff"))]
                     for tiff_file_name in file_names:
-                        results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-4]
+                        if tiff_file_name.endswith(".tif"):
+                            results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-4]
+                        else:
+                            # ends with .tiff
+                            results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-5]
                         print(f"## Analyzing  {results_id}")
                         analyze_movie(tiff_file_name=os.path.join(current_data_path, tiff_file_name),
                                       results_id=results_id, results_path=results_path)
@@ -839,3 +1014,6 @@ if __name__ == '__main__':
             #         break
             #     break
             # break
+
+
+
