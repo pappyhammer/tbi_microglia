@@ -340,9 +340,10 @@ def binarized_frame(movie_frame, filled_value=1, percentile_threshold=90, thresh
 def max_diff_bw_frames(cell_movie, cell_id, data_id=None):
     """
     Take a movie, apply a threshold, binarize it, then make the diff between each frame but
-    the a x-y translation is applied between each contiguous frame in order to minimize the diff.
-    Diff is actually the sum of binary pixels after substracting the previous frame to the next. (frames[index] - frames[index-1])
-    This sum give an idea of the retraction or not of axons.
+    a x-y translation is applied between each contiguous frame in order to minimize the diff.
+    Diff is actually the sum of binary pixels after substracting the previous frame to the next.
+    (frames[index] - frames[index-1])
+    This sum give an idea of the retraction.
     Args:
         cell_movie:
 
@@ -378,9 +379,9 @@ def max_diff_bw_frames(cell_movie, cell_id, data_id=None):
                                        keep_original_values=False)
         binary_cell_movie[frame_index] = binary_frame
         n_pixels_above_threshold = np.where(frame_movie >= threshold_value)[0].shape
-        if n_pixels_above_threshold[0] < 10:
-            print(f"Instanciating binary_cell_movie {frame_index} {cell_id} {data_id}, "
-                  f"sum {np.sum(binary_cell_movie[frame_index])}, {n_pixels_above_threshold} {np.max(frame_movie)}")
+        # if n_pixels_above_threshold[0] < 10:
+        #     print(f"Instanciating binary_cell_movie {frame_index} {cell_id} {data_id}, "
+        #           f"sum {np.sum(binary_cell_movie[frame_index])}, {n_pixels_above_threshold} {np.max(frame_movie)}")
 
         if threshold_value == 255:
             f, (ax1, ax2) = plt.subplots(1, 2)
@@ -470,9 +471,6 @@ def max_diff_bw_frames(cell_movie, cell_id, data_id=None):
                     print(f"## {frame_index} threshold_value {int(threshold_value)} sum {np.sum(binary_cell_movie[frame_index])}")
                     ax1.imshow(scale_abs_movie[frame_index], cmap=cm.Greys)
                     ax1.set_title(f"ScaleAbs thr {int(threshold_value)}")
-                    # ax1.imshow(cv2.convertScaleAbs(frame_movie), cmap=cm.Greys)
-                    # ax1.set_title(f"uint8 {data_id} {cell_id}")
-                    # print(f"threshold_value {threshold_value}")
                     ax2.imshow(binary_cell_movie[frame_index], cmap=cm.Greys)
                     ax2.set_title(f"Binarized")
                     # tmp_frame = np.zeros(cell_movie[-1].shape, dtype="int16")
@@ -663,6 +661,14 @@ def load_tiff_movie(tiff_file_name):
 
 
 def find_blobs(tiff_array, results_path=None, result_id=None, with_blob_display=False):
+    """
+    Blobs here will correspond to cells
+    :param tiff_array: (np.array)
+    :param results_path:
+    :param result_id:
+    :param with_blob_display: (bool) if True, the blob outcome will be save in a figure
+    :return:
+    """
     # img = ((tiff_array - tiff_array.min()) * (1 / (tiff_array.max() - tiff_array.min()) * 255)).astype('uint8')
     img = binarized_frame(movie_frame=tiff_array, filled_value=255, percentile_threshold=98)
     # img = tiff_array.copy()
@@ -746,22 +752,28 @@ def find_blobs(tiff_array, results_path=None, result_id=None, with_blob_display=
 
 
 def analyze_movie(tiff_file_name, results_id, results_path):
+    """
+    Main analysis
+    :param tiff_file_name: (str)
+    :param results_id:  (str)
+    :param results_path: (str)
+    :return:
+    """
     movie = load_tiff_movie(tiff_file_name=tiff_file_name)
     print(movie.shape)
-    # print(f"tiff_array.mean {np.mean(tiff_array)}")
 
     new_results_path = os.path.join(results_path, results_id)
     if not os.path.exists(new_results_path):
         os.mkdir(new_results_path)
 
     # each element if a tuple of 2 int represent the center of a cell
-    # TODO: See to find blob on avg movie ? np.mean(movie, axis=0)
     # centers_of_gravity = find_blobs(movie.copy()[0])
     centers_of_gravity = find_blobs(np.mean(movie, axis=0), with_blob_display=True,
                                     results_path=new_results_path, result_id=results_id)
 
     print(f"Nb of blobs: {len(centers_of_gravity)}")
     # raise Exception("TOTO")
+    # list of 3d array reprensenting a crop movie centered on a blob (cell)
     cells_movie = []
     # now we want to build as many arrays as centers_of_gravity
     for cell_index, centroid_cell in enumerate(centers_of_gravity):
@@ -769,6 +781,9 @@ def analyze_movie(tiff_file_name, results_id, results_path):
         cells_movie.append(cropped_movie)
         # save_array_as_tiff(array_to_save=cropped_movie, path_results=results_path, file_name=f"{cell_index}_{results_id}.tiff")
 
+    # list of float representing the difference of pixels intensity between a frame and the previous one.
+    # if the difference is negative, it should mean there was some contraction, if it is positive, it should
+    # mean there was some expension.
     all_diff_sums = []
     for cell_movie_index, cell_movie in enumerate(cells_movie):
         try_second_version = True
@@ -779,7 +794,8 @@ def analyze_movie(tiff_file_name, results_id, results_path):
                                                              cell_id=cell_movie_index,
                                                              data_id=results_id)
             all_diff_sums.extend(diff_sums)
-            # print(f"{cell_movie_index}_new_{results_id} {x_y_translations}")
+            # we save the crop movie, the version without added registration (motion correction)
+            # and the version with motion correction
             save_array_as_tiff(array_to_save=registered_movie, path_results=new_results_path,
                                file_name=f"{cell_movie_index}_new_{results_id}.tiff")
             save_array_as_tiff(array_to_save=cell_movie, path_results=new_results_path,
@@ -790,7 +806,6 @@ def analyze_movie(tiff_file_name, results_id, results_path):
                 new_cell_movie = cell_movie
             else:
                 new_cell_movie = register_movie(cell_movie, x_y_translation)
-                # print(f"{cell_movie_index}: {x_y_translation}")
                 save_array_as_tiff(array_to_save=new_cell_movie, path_results=new_results_path,
                                    file_name=f"{cell_movie_index}_new_{results_id}.tiff")
                 save_array_as_tiff(array_to_save=cell_movie, path_results=new_results_path,
@@ -882,7 +897,8 @@ def find_dir_with_keywords(path_to_explore, keyword):
 if __name__ == '__main__':
     # root_path = "/Users/pappyhammer/Documents/academique/these_inmed/tbi_microglia_github/"
     first_data_version = False
-    root_path = "/media/julien/Not_today/tbi_microglia/"
+    # root_path = "/media/julien/Not_today/tbi_microglia/"
+    root_path = "/Volumes/JD/these_inmed/tbi_microglia/"
     if first_data_version:
         data_path = os.path.join(root_path, "data/")
     else:
@@ -894,6 +910,10 @@ if __name__ == '__main__':
     results_path = os.path.join(results_path, time_str)
     os.mkdir(results_path)
 
+    # if use_pre_computed_data is set to True, it means we use the data pre computed to plot the figures
+    # (cumulative distribution plots)
+    # if False, then we apply to algorithm to split the movie in small patch aroudn cell and compute
+    # the shift to apply registration and then compute the pixel intensity difference between frames
     use_pre_computed_data = True
     if first_data_version:
         all_mice = ["Mouse 64", "Mouse 66"]
@@ -914,6 +934,8 @@ if __name__ == '__main__':
         # we do pair of all_mice
         pairs_of_mice = [(all_mice[i], all_mice[j]) for i in range(len(all_mice))
                           for j in range(i + 1, len(all_mice))]
+        # adding plots of each mouse separatly
+        pairs_of_mice.extend([[all_mice[i]] for i in range(len(all_mice))])
         colors_dict = dict()
         for mice in pairs_of_mice:
             distributions_dict = dict()
@@ -998,9 +1020,6 @@ if __name__ == '__main__':
 
                     # if first_data_version:
                     file_names = [f for f in file_names if "AVG" in f and (f.endswith(".tif") or f.endswith(".tiff"))]
-                    # else:
-                    #     file_names = [f for f in file_names if (not f.startswith(".")) and
-                    #                   (f.endswith(".tif") or f.endswith(".tiff"))]
                     for tiff_file_name in file_names:
                         if tiff_file_name.endswith(".tif"):
                             results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-4]
@@ -1011,9 +1030,6 @@ if __name__ == '__main__':
                         analyze_movie(tiff_file_name=os.path.join(current_data_path, tiff_file_name),
                                       results_id=results_id, results_path=results_path)
                         print("")
-            #         break
-            #     break
-            # break
 
 
 
