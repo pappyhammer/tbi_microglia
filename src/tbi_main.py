@@ -10,6 +10,7 @@ import cv2
 import tifffile
 from bisect import bisect_right
 import scipy.ndimage
+import pandas as pd
 
 
 # qualitative 12 colors : http://colorbrewer2.org/?type=qualitative&scheme=Paired&n=12 + 11 diverting
@@ -925,10 +926,10 @@ if __name__ == '__main__':
     precomputed_data_dir = os.path.join(root_path, "distributions")
     if use_pre_computed_data:
         """
-        '-'	solid line style
-        '--'	dashed line style
-        '-.'	dash-dot line style
-        ':'	dotted line style
+            '-'	solid line style
+            '--'	dashed line style
+            '-.'	dash-dot line style
+            ':'	dotted line style
         """
         linestyles = ['-', '--', '-.', ':', '-']
         # we do pair of all_mice
@@ -937,11 +938,16 @@ if __name__ == '__main__':
         # adding plots of each mouse separatly
         pairs_of_mice.extend([[all_mice[i]] for i in range(len(all_mice))])
         colors_dict = dict()
+        all_mice_xls = os.path.join(results_path, 'all_mice_diff_values.xlsx')
+        mice_df = pd.DataFrame()
+        is_mouse_saved = dict()
         for mice in pairs_of_mice:
             distributions_dict = dict()
             linestyle_dict = dict()
             for mouse_index, mouse in enumerate(mice):
                 print(f"## {mouse}")
+                current_mouse_diff_xls = os.path.join(results_path, f'{mouse}_diff_values.xlsx')
+                mouse_df = pd.DataFrame()
                 linestyle_dict[mouse] = linestyles[mouse_index]
                 file_names = []
                 # look for filenames in the fisrst directory, if we don't break, it will go through all directories
@@ -968,10 +974,27 @@ if __name__ == '__main__':
                         print(f"{session_id} < 0: {-1*np.round(neg_values, 2)} vs {np.round(pos_values, 2)}")
 
                     distributions_dict[session_id] = distribution
+
+                    mouse_list = [mouse] * len(distribution)
+                    session_id_list = [session_id[3:]] * len(distribution)
+                    sum_up_data = {'mouse_id': mouse_list, 'session_id': session_id_list,
+                                   'diffs': distribution}
+                    session_df = pd.DataFrame(sum_up_data)
+                    current_session_diff_xls = os.path.join(results_path, f'{session_id}_diff_values.xlsx')
+                    if mouse not in is_mouse_saved:
+                        session_df.to_excel(current_session_diff_xls)
+                    mouse_df = mouse_df.append(session_df, ignore_index=True)
+                if mouse not in is_mouse_saved:
+                    is_mouse_saved[mouse] = True
+                    mouse_df.to_excel(current_mouse_diff_xls)
+                    mice_df = mice_df.append(mouse_df, ignore_index=True)
+
+
             # BREWER_COLORS[index % len(BREWER_COLORS)]
             plot_cdf_from_distributions(distributions_dict, results_path, colors_dict=colors_dict,
                                         linestyle_dict=linestyle_dict, title=f"{'_'.join(mice)}_",
                                         len_dict_key=len_dict_key)
+        mice_df.to_excel(all_mice_xls)
     else:
         # results_id = "XYCTZ_Substack_9-16"
         # tiff_file_name = os.path.join(data_path, "registered [XYCTZ] Substack (9-16).tif")
