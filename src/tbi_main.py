@@ -898,10 +898,13 @@ def find_dir_with_keywords(path_to_explore, keyword):
 if __name__ == '__main__':
     # root_path = "/Users/pappyhammer/Documents/academique/these_inmed/tbi_microglia_github/"
     first_data_version = False
+    third_version_data = True
     # root_path = "/media/julien/Not_today/tbi_microglia/"
     root_path = "/Volumes/JD/these_inmed/tbi_microglia/"
     if first_data_version:
         data_path = os.path.join(root_path, "data/")
+    elif third_version_data:
+        data_path = os.path.join(root_path, "data/Microglia in vivo crop/")
     else:
         data_path = os.path.join(root_path, "data/Microglia in vivo/")
 
@@ -919,6 +922,9 @@ if __name__ == '__main__':
     if first_data_version:
         all_mice = ["Mouse 64", "Mouse 66"]
         len_dict_key = 8
+    elif third_version_data:
+        all_mice = ["M1", "M2", "M3", "M4", "M6"]
+        len_dict_key = 2
     else:
         all_mice = ["M1", "M2", "M3", "M4", "M6"]
         len_dict_key = 2
@@ -937,6 +943,8 @@ if __name__ == '__main__':
                           for j in range(i + 1, len(all_mice))]
         # adding plots of each mouse separatly
         pairs_of_mice.extend([[all_mice[i]] for i in range(len(all_mice))])
+        # adding plots of all mice together
+        # pairs_of_mice.extend([all_mice])
         colors_dict = dict()
         all_mice_xls = os.path.join(results_path, 'all_mice_diff_values.xlsx')
         mice_df = pd.DataFrame()
@@ -960,7 +968,10 @@ if __name__ == '__main__':
                     distribution = np.load(os.path.join(precomputed_data_dir, file_name))
                     # session_id = file_name[len(mouse)+1:-4]
                     session_id = file_name[:-4]
-                    index_avg = session_id.index("AVG")
+                    if third_version_data:
+                        index_avg = session_id.index("MAX")
+                    else:
+                        index_avg = session_id.index("AVG")
                     session_id = session_id[:index_avg - 1]
                     if fill_colors_dict:
                         # 8 is the length of the mouse id
@@ -1003,6 +1014,10 @@ if __name__ == '__main__':
             subfolders = {"Injury": ["Before injury", "After injury"],
                           "Baseline": ["Before zoom", "After zoom"],
                           "1d post injury": [""]}
+        elif third_version_data:
+            conditions = ["1d post injury", "5d post injury"]
+            subfolders = {"1d post injury": [""],
+                          "5d post injury": [""]}
         else:
             conditions = ["Injury day", "1d post injury", "3d post injury", "5d post injury"]
             subfolders = {"Injury day": ["1h post injury", "30min baseline"],
@@ -1017,42 +1032,66 @@ if __name__ == '__main__':
             else:
                 mouse_path = os.path.join(data_path, mouse_path[0])
             for condition in conditions:
-                condition_path = find_dir_with_keywords(mouse_path, condition)
-                if len(condition_path) == 0:
-                    # raise Exception(f"{condition} not found in {mouse_path}")
-                    print(f"{condition} not found in {mouse_path}")
-                    continue
-                else:
-                    condition_path = os.path.join(mouse_path, condition_path[0])
-                for subfolder in subfolders[condition]:
-                    if subfolder == "":
-                        current_data_path = condition_path
-                    else:
-                        current_data_path = find_dir_with_keywords(condition_path, subfolder)
-                        if len(current_data_path) == 0:
-                            raise Exception(f"{subfolder} not found in {condition_path}")
-                        else:
-                            current_data_path = os.path.join(condition_path, current_data_path[0])
-
+                if third_version_data:
+                    current_data_path = mouse_path
                     # then we look for all tif files starting with a f
                     file_names = []
                     # look for filenames in the fisrst directory, if we don't break, it will go through all directories
                     for (dirpath, dirnames, local_filenames) in os.walk(current_data_path):
                         file_names.extend(local_filenames)
                         break
-
-                    # if first_data_version:
-                    file_names = [f for f in file_names if "AVG" in f and (f.endswith(".tif") or f.endswith(".tiff"))]
+                    file_names = [f for f in file_names if "MAX" in f and condition.lower() in f.lower()
+                                  and (f.endswith(".tif") or f.endswith(".tiff"))
+                                  and (not f.startswith("."))]
                     for tiff_file_name in file_names:
                         if tiff_file_name.endswith(".tif"):
-                            results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-4]
+                            results_id = mouse + "_" + condition + "_" + tiff_file_name[:-4]
                         else:
                             # ends with .tiff
-                            results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-5]
+                            results_id = mouse + "_" + condition + "_" + tiff_file_name[:-5]
                         print(f"## Analyzing  {results_id}")
                         analyze_movie(tiff_file_name=os.path.join(current_data_path, tiff_file_name),
                                       results_id=results_id, results_path=results_path)
                         print("")
+
+                else:
+                    condition_path = find_dir_with_keywords(mouse_path, condition)
+                    if len(condition_path) == 0:
+                        # raise Exception(f"{condition} not found in {mouse_path}")
+                        print(f"{condition} not found in {mouse_path}")
+                        continue
+                    else:
+                        condition_path = os.path.join(mouse_path, condition_path[0])
+                    for subfolder in subfolders[condition]:
+                        if subfolder == "":
+                            current_data_path = condition_path
+                        else:
+                            current_data_path = find_dir_with_keywords(condition_path, subfolder)
+                            if len(current_data_path) == 0:
+                                raise Exception(f"{subfolder} not found in {condition_path}")
+                            else:
+                                current_data_path = os.path.join(condition_path, current_data_path[0])
+
+                        # then we look for all tif files starting with a f
+                        file_names = []
+                        # look for filenames in the fisrst directory, if we don't break, it will go through all directories
+                        for (dirpath, dirnames, local_filenames) in os.walk(current_data_path):
+                            file_names.extend(local_filenames)
+                            break
+
+                        # if first_data_version:
+                        file_names = [f for f in file_names if "AVG" in f and (f.endswith(".tif") or f.endswith(".tiff"))
+                                      and (not f.startswith("."))]
+                        for tiff_file_name in file_names:
+                            if tiff_file_name.endswith(".tif"):
+                                results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-4]
+                            else:
+                                # ends with .tiff
+                                results_id = mouse + "_" + condition + "_" + subfolder + "_" + tiff_file_name[:-5]
+                            print(f"## Analyzing  {results_id}")
+                            analyze_movie(tiff_file_name=os.path.join(current_data_path, tiff_file_name),
+                                          results_id=results_id, results_path=results_path)
+                            print("")
 
 
 
